@@ -1,130 +1,406 @@
-#  BioLens
+# 🧬 BIOLens
 
-## AI-Powered Genomic Intelligence Platform
+### AI-Powered Biomedical Intelligence • Disease Graphs • Drug Repurposing • Knowledge Discovery
 
-BioLens is a biomedical knowledge discovery platform that combines artificial intelligence, bioinformatics, and graph databases to help researchers explore relationships between genes, diseases, proteins, mutations, and drugs.
+<p align="center">
+  <b>Turning biomedical data into connected, explainable intelligence.</b>
+</p>
 
-Built using React, FastAPI, and Neo4j, BioLens enables users to perform genomic searches, analyze mutations, investigate drug interactions, visualize protein information, and generate AI-assisted research insights through an interactive knowledge graph.
-
----
-
-## Features
-
-* DNA and Gene Search
-* Drug Interaction Analysis
-* Mutation Analysis
-* Multi-Omics Data Exploration
-* Protein Visualization
-* AI Research Assistant
-* Disease-Gene Relationship Discovery
-* Patient Digital Twin Analysis
-* Knowledge Graph-Based Biomedical Exploration
+<p align="center">
+  <img src="https://img.shields.io/badge/AI-Biomedical%20Intelligence-purple?style=for-the-badge">
+  <img src="https://img.shields.io/badge/Neo4j-Knowledge%20Graph-blue?style=for-the-badge">
+  <img src="https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge">
+  <img src="https://img.shields.io/badge/React-Frontend-61DAFB?style=for-the-badge">
+  <img src="https://img.shields.io/badge/Docker-Containerized-2496ED?style=for-the-badge">
+</p>
 
 ---
 
-## Technology Stack
+## 🔬 What is BIOLens?
 
-### Frontend
+**BIOLens is a biomedical intelligence platform designed to make complex biological relationships understandable, searchable, and actionable.**
 
-* React
-* TypeScript
-* Vite
-* Tailwind CSS
+Biomedical research is not just a collection of isolated facts.
 
-### Backend
+A disease is connected to genes.  
+Genes are connected to proteins.  
+Proteins interact with pathways.  
+Pathways influence biological processes.  
+Drugs interact with targets.  
+Targets influence diseases.
 
-* FastAPI
-* Python
+BIOLens turns these relationships into a **connected biomedical knowledge graph** and provides an intelligent interface for exploring them.
 
-### Database
+Instead of asking:
 
-* Neo4j Graph Database
+> *"What do we know about this disease?"*
+
+BIOLens lets you explore:
+
+> **"What is connected to this disease, how are those entities connected, and what potential therapeutic relationships exist?"**
 
 ---
 
-## Project Structure
+# 🧠 Core Idea
 
 ```text
-BioLens/
-├── src/
-│   ├── components/
-│   ├── hooks/
-│   ├── routes/
-│   ├── lib/
-│   └── styles.css
+                    ┌──────────────┐
+                    │   DISEASE    │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              ↓            ↓            ↓
+           ┌──────┐    ┌───────┐    ┌──────┐
+           │ GENES│    │PROTEIN│    │DRUGS │
+           └──┬───┘    └───┬───┘    └───┬──┘
+              │            │            │
+              └────────────┼────────────┘
+                           ↓
+                    ┌──────────────┐
+                    │  PATHWAYS    │
+                    └──────┬───────┘
+                           ↓
+                    ┌──────────────┐
+                    │ BIOLOGICAL   │
+                    │   PROCESSES  │
+                    └──────────────┘
+
+BIOLens represents biomedical information as relationships rather than isolated records.
+
+That makes it possible to discover connections that are difficult to see in traditional tables and documents.
+
+🚀 Features
+🕸️ Biomedical Knowledge Graph
+
+At the heart of BIOLens is a graph-based representation of biomedical knowledge.
+
+Instead of storing information only as rows and columns, BIOLens models entities and their relationships.
+
+Example:
+
+Disease
+   ↓
+Associated Gene
+   ↓
+Protein
+   ↓
+Pathway
+   ↓
+Drug Target
+   ↓
+Potential Drug
+
+This structure allows complex biological relationships to be queried naturally.
+
+💊 Drug Repurposing
+
+BIOLens can be used to explore relationships between:
+
+Diseases
+Drugs
+Biological targets
+Genes
+Proteins
+Pathways
+Mechanisms
+
+The goal is to help identify potential therapeutic connections worth investigating.
+
+BIOLens is a research and exploration tool, not a clinical decision-making system.
+
+🔎 Intelligent Biomedical Search
+
+Search biomedical entities and navigate through their connected biological context.
+
+Instead of returning a single result, BIOLens can expose the network surrounding the entity.
+
+🧬 Relationship Discovery
+
+Biomedical knowledge becomes much more useful when relationships are visible.
+
+BIOLens focuses on questions such as:
+
+What genes are associated with this disease?
+
+Which proteins are connected to these genes?
+
+Which pathways involve those proteins?
+
+Which drugs interact with relevant targets?
+
+What other diseases share similar biological mechanisms?
+📊 Biomedical Data Visualization
+
+Complex biological networks can become impossible to understand when represented only as text.
+
+BIOLens transforms those relationships into interactive visual exploration.
+
+                Disease
+               /   |   \
+              /    |    \
+           Gene  Protein  Drug
+             \      |      /
+              \   Pathway /
+               \    |    /
+                Biological
+                 Process
+🏗️ Architecture
+                       ┌─────────────────────┐
+                       │      BIOLens UI     │
+                       │   React / TanStack  │
+                       └──────────┬──────────┘
+                                  │
+                                  │ HTTP
+                                  ↓
+                       ┌─────────────────────┐
+                       │    FastAPI Backend  │
+                       │      Python         │
+                       └──────────┬──────────┘
+                                  │
+                                  │ Bolt
+                                  ↓
+                       ┌─────────────────────┐
+                       │        Neo4j        │
+                       │ Biomedical Graph DB │
+                       └─────────────────────┘
+Frontend
+
+Built for an interactive biomedical exploration experience.
+
+Backend
+
+Provides the API layer responsible for communicating with the knowledge graph and serving biomedical data.
+
+Neo4j
+
+Stores the biomedical entities and their relationships as a graph.
+
+Docker
+
+Packages the application components into reproducible containers.
+
+🧩 Tech Stack
+Layer	Technology
+Frontend	React
+Framework	TanStack Start
+Build Tool	Vite
+Styling	Tailwind CSS
+Backend	Python
+API	FastAPI
+Database	Neo4j
+Graph Protocol	Bolt
+Containerization	Docker
+Orchestration	Docker Compose
+🗂️ Project Structure
+BIOLens/
 │
 ├── biolens-backend/
 │   ├── main.py
 │   ├── requirements.txt
-│   ├── import_data.py
-│   └── database/
+│   ├── Dockerfile
+│   └── ...
 │
+├── src/
+│   ├── routes/
+│   ├── components/
+│   ├── lib/
+│   └── ...
+│
+├── public/
+│
+├── Dockerfile
+├── docker-compose.yml
+├── nginx.conf
 ├── package.json
+├── vite.config.ts
+├── RUN_BIOLENS.md
 └── README.md
-```
+🐳 Running BIOLens
 
----
+BIOLens is containerized so the frontend and backend can be started together.
 
-## Installation
+1. Start Neo4j
 
-### Frontend
+Open Neo4j Desktop and start the database used by BIOLens.
 
-```bash
+Make sure the Neo4j Bolt service is available on:
+
+localhost:7687
+2. Start BIOLens
+
+From the project root:
+
+docker compose up -d
+
+Check the containers:
+
+docker ps
+3. Open BIOLens
+
+Frontend:
+
+http://localhost:3000
+
+Backend:
+
+http://localhost:8000
+
+Backend health/database test:
+
+http://localhost:8000/test
+
+Or:
+
+curl http://localhost:8000/test
+
+A successful response should indicate that the backend is connected to Neo4j.
+
+🛑 Stopping BIOLens
+
+To stop the project:
+
+docker compose down
+
+This stops and removes the BIOLens containers and Compose network.
+
+Your Docker images and Neo4j database are not deleted.
+
+To start again:
+
+docker compose up -d
+🔧 Development
+
+Install frontend dependencies:
+
 npm install
+
+Run the frontend development environment:
+
 npm run dev
-```
 
-### Backend
+Build the frontend:
 
-```bash
-pip install -r biolens-backend/requirements.txt
-uvicorn main:app --reload
-```
+npm run build
 
----
+For the containerized production-style environment:
 
-## Core Modules
+docker compose build
+docker compose up -d
+🧪 Health Check
 
-### DNA Search Panel
+BIOLens exposes a backend test endpoint:
 
-Search and analyze genes using sequence-based and graph-driven relationships.
+curl http://localhost:8000/test
 
-### Drug Interaction Panel
+Example:
 
-Explore potential interactions between drugs and their associated biological entities.
+{
+  "status": "connected",
+  "nodes": 1190
+}
 
-### Mutation Analysis
+The node count represents the number of graph nodes currently accessible through the configured Neo4j database.
 
-Investigate mutation-specific impacts on genes, proteins, diseases, and therapeutic targets.
+🔐 Environment Variables
 
-### Multi-Omics Explorer
+Sensitive configuration such as database credentials should be stored in environment variables.
 
-Analyze transcriptomic, proteomic, metabolomic, and epigenetic information.
+Example:
 
-### Protein Viewer
+NEO4J_URI=bolt://host.docker.internal:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<your-password>
 
-Visualize protein-related information and biological associations.
+Never commit real passwords, API keys, or secrets to GitHub.
 
-### Patient Digital Twin
+🧬 Why a Knowledge Graph?
 
-Generate personalized genomic insights based on patient-specific data.
+Traditional databases are excellent at answering:
 
-### AI Research Agent
+"Give me the information stored in this row."
 
-Assist researchers in exploring biomedical questions using graph-based reasoning and AI-generated insights.
+Biomedical research often asks something much more complicated:
 
----
+"Show me everything connected to this biological entity and explain how those things relate."
 
-## Future Enhancements
+Graphs are naturally suited for this.
 
-* Enhanced Biomedical Knowledge Graph Expansion
-* Advanced Disease Prediction Models
-* Real-Time Literature Integration
-* Drug Repurposing Recommendations
-* Improved Protein Structure Analysis
-* Explainable AI-Based Research Workflows
+A biomedical graph can represent:
 
----
+              ┌─────────┐
+              │ Disease │
+              └────┬────┘
+                   │
+              ASSOCIATED_WITH
+                   │
+                   ↓
+                ┌──────┐
+                │ Gene │
+                └──┬───┘
+                   │
+              ENCODES
+                   │
+                   ↓
+               ┌─────────┐
+               │ Protein │
+               └────┬────┘
+                    │
+              INVOLVED_IN
+                    │
+                    ↓
+               ┌─────────┐
+               │ Pathway │
+               └────┬────┘
+                    │
+               TARGETED_BY
+                    │
+                    ↓
+                 ┌─────┐
+                 │Drug │
+                 └─────┘
+
+This is the foundation of BIOLens.
+
+🎯 Vision
+
+BIOLens aims to become a unified interface for exploring biological knowledge as a connected system.
+
+The long-term vision is to bridge:
+
+DATA
+ ↓
+KNOWLEDGE
+ ↓
+RELATIONSHIPS
+ ↓
+DISCOVERY
+ ↓
+RESEARCH
+
+Biomedical information shouldn't feel like searching through disconnected databases.
+
+It should feel like exploring a living network.
+
+⚠️ Disclaimer
+
+BIOLens is intended for research, educational, and exploratory purposes.
+
+Any drug-disease associations, biological relationships, predictions, or potential repurposing candidates surfaced by the platform should be independently validated through appropriate scientific research.
+
+BIOLens does not provide medical diagnosis, treatment recommendations, or clinical advice.
+
+👨‍💻 Built With
+
+Built as a biomedical technology project combining:
+
+Artificial Intelligence × Knowledge Graphs × Biomedical Data × Interactive Visualization
+
+<p align="center">
+🧬 Explore the biology behind the data.
+
+BIOLens
+
+</p> ```
 
 ## Contributors
 
