@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+import { apiUrl } from "@/lib/api/client";
+
 interface SearchResult {
   gene: string;
   similarity_score: number;
@@ -38,7 +40,7 @@ export default function DNASearchPanel({ onSelectGene }: DNASearchPanelProps) {
 
     try {
       const res = await fetch(
-        `http://127.0.0.1:8000/sequence_search?q=${encodeURIComponent(trimmed)}`
+        apiUrl(`sequence_search?q=${encodeURIComponent(trimmed)}`)
       );
       const data: SearchResponse = await res.json();
 

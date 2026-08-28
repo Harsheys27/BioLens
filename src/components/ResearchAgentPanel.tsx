@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
+import { apiUrl } from "@/lib/api/client";
+
 // ============================================================
 // Progressive Section Component
 // ============================================================
@@ -114,7 +116,7 @@ export default function ResearchAgentPanel({
     }, 400);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/research_agent", {
+      const res = await fetch(apiUrl("research_agent"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: query }),
@@ -215,7 +217,7 @@ export default function ResearchAgentPanel({
                 {error}
               </div>
               <p className="font-mono text-[10px] text-[color:var(--muted-foreground)]">
-                Verify the backend server is running at http://127.0.0.1:8000 and Neo4j is accessible.
+                Verify the backend server is running at http://localhost:8000 and Neo4j is accessible.
               </p>
             </div>
           )}

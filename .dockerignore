@@ -1,0 +1,20 @@
+# Frontend dependencies and generated output
+node_modules
+.output
+dist
+.tanstack
+.vinxi
+.nitro
+
+# Version control and local files
+.git
+*.log
+.DS_Store
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# The frontend image does not need the backend build context
+biolens-backend

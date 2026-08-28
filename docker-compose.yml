@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: ./biolens-backend
+      dockerfile: Dockerfile
+    container_name: biolens-backend
+    env_file:
+      - ./biolens-backend/.env
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    container_name: biolens-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped

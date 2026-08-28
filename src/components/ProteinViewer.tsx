@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { apiUrl } from "@/lib/api/client";
+
 interface AlphaFoldResult {
   gene: string;
   uniprot_id: string | null;
@@ -22,7 +24,7 @@ export default function ProteinViewer({ geneName, onClose }: ProteinViewerProps)
     setLoading(true);
     setError(null);
 
-    fetch(`http://127.0.0.1:8000/alphafold/${encodeURIComponent(geneName)}`)
+    fetch(apiUrl(`alphafold/${encodeURIComponent(geneName)}`))
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();

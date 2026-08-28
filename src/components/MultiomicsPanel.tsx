@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { apiUrl } from "@/lib/api/client";
+
 type TabType =
   | "transcript"
   | "protein"
@@ -54,9 +56,7 @@ export default function MultiomicsPanel({
       setError("");
       setData(null);
 
-      const res = await fetch(
-        `http://127.0.0.1:8000/${endpointMap[selectedTab]}`
-      );
+      const res = await fetch(apiUrl(endpointMap[selectedTab]));
 
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);

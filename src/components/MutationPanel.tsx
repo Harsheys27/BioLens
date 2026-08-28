@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 
+import { apiUrl } from "@/lib/api/client";
+
 export default function MutationPanel({ geneName, onClose }: { geneName: string; onClose: () => void }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`http://127.0.0.1:8000/mutations/${encodeURIComponent(geneName)}`)
+    fetch(apiUrl(`mutations/${encodeURIComponent(geneName)}`))
       .then((res) => res.json())
       .then(setData)
       .catch(console.error)

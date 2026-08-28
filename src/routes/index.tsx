@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ProteinViewer from "@/components/ProteinViewer";
+import { apiUrl } from "@/lib/api/client";
 import DNASearchPanel from "@/components/DNASearchPanel";
 import PatientTwinPanel from "@/components/PatientTwinPanel";
 import DrugInteractionPanel from "@/components/DrugInteractionPanel";
@@ -675,7 +676,7 @@ function ExplanationPanel({ drug, disease, onClose }: { drug: Drug; disease: str
   }, [drug]);
 
   useEffect(() => {
-    fetch(`http://127.0.0.1:8000/drug/${encodeURIComponent(drug.name)}`)
+    fetch(apiUrl(`drug/${encodeURIComponent(drug.name)}`))
       .then((res) => res.json())
       .then((data) => {
         console.log("Drug Data:", data);
@@ -986,7 +987,7 @@ const DISEASES = ["Alzheimer disease", "Parkinson disease", "COVID-19", "Breast 
 
 async function fetchDiseaseData(disease: string) {
   const response = await fetch(
-    `http://127.0.0.1:8000/disease/${encodeURIComponent(disease)}`
+    apiUrl(`disease/${encodeURIComponent(disease)}`)
   );
 
   if (!response.ok) {
@@ -999,7 +1000,7 @@ async function fetchDiseaseData(disease: string) {
 async function fetchRepurposeData(disease: string) {
 
   const res = await fetch(
-    `http://127.0.0.1:8000/repurpose/${encodeURIComponent(disease)}`
+    apiUrl(`repurpose/${encodeURIComponent(disease)}`)
   );
 
   if (!res.ok) {
@@ -1010,9 +1011,7 @@ async function fetchRepurposeData(disease: string) {
 }
 
 async function fetchStats() {
-  const response = await fetch(
-    "http://127.0.0.1:8000/stats"
-  );
+  const response = await fetch(apiUrl("stats"));
 
   if (!response.ok) {
     throw new Error("Failed to fetch stats");
@@ -1110,17 +1109,17 @@ function BioLensPage() {
     }
   };
 
-  const drugs =
-  apiData?.drugs?.map((drugName: string) => ({
-    name: drugName,
-    score: 0.85,
-    badges: ["Neo4j Result"],
-    reasoning: ["Knowledge Graph"],
-    narrative: `${drugName} was retrieved from the BioLens knowledge graph. This candidate shares biological connections with
-  disease-associated genes and may warrant further
-  repurposing investigation.`,
-    ci: [0.75, 0.95],
-  })) || [];
+  const drugs: Drug[] =
+    apiData?.drugs?.map((drugName: string): Drug => ({
+      name: drugName,
+      score: 0.85,
+      badges: ["Neo4j Result"],
+      reasoning: ["Knowledge Graph"],
+      narrative: `${drugName} was retrieved from the BioLens knowledge graph. This candidate shares biological connections with
+    disease-associated genes and may warrant further
+    repurposing investigation.`,
+      ci: [0.75, 0.95],
+    })) || [];
   const drugObj = drugs.find((d) => d.name === selectedDrug) || null;
 
   return (

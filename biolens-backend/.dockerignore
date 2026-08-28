@@ -1,0 +1,12 @@
+# Runtime credentials are injected by Compose, never copied into the image
+.env
+.env.*
+!.env.example
+
+# Generated files and old snapshots are not runtime dependencies
+__pycache__
+*.py[cod]
+*.backup-*
+*.save
+*.log
+.git

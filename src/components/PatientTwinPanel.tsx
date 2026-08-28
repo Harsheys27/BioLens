@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+import { apiUrl } from "@/lib/api/client";
+
 interface PatientTwinProps {
   onClose: () => void;
 }
@@ -18,7 +20,7 @@ export default function PatientTwinPanel({ onClose }: PatientTwinProps) {
   const submit = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:8000/patient/twin", {
+      const res = await fetch(apiUrl("patient/twin"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

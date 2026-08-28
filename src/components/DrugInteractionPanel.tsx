@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+import { apiUrl } from "@/lib/api/client";
+
 export default function DrugInteractionPanel({ onClose }: { onClose: () => void }) {
   const [drugInput, setDrugInput] = useState("Lisinopril, Metformin, Atorvastatin");
   const [result, setResult] = useState<any>(null);
@@ -9,7 +11,7 @@ export default function DrugInteractionPanel({ onClose }: { onClose: () => void 
     setLoading(true);
     try {
       const drugs = drugInput.split(",").map((s) => s.trim()).filter(Boolean);
-      const res = await fetch("http://127.0.0.1:8000/drug_interactions", {
+      const res = await fetch(apiUrl("drug_interactions"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ drugs }),

@@ -9,20 +9,23 @@ import httpx
 import re
 import asyncio
 from datetime import datetime
+import os
 
 app = FastAPI(title="BioLens Biomedical Intelligence API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://host.docker.internal:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 driver = GraphDatabase.driver(
-    "bolt://localhost:7687",
-    auth=("neo4j", "Godrej@111")
+    NEO4J_URI,
+    auth=(NEO4J_USER, NEO4J_PASSWORD)
 )
 
 # ============================================================
