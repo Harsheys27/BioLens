@@ -37,3 +37,14 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+
+# Neo4j database backups and generated data
+neo4j/backups/
+
+# Local database backups
+neo4j/backups/
+
+# Private personal documents and temporary backups
+CV.md
+RESUME.md
+README.conflict-backup.md

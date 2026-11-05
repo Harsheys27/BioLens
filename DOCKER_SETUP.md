@@ -249,6 +249,25 @@ lsof -nP -iTCP:8000 -sTCP:LISTEN
 
 Stop the old backend process or stop the other container using that port, then run Compose again.
 
+On macOS, `localhost` may resolve to the IPv6 loopback `::1` while
+`127.0.0.1` stays IPv4. Docker publishes port 8000 on IPv6, and a backend
+started with `python3 -m uvicorn main:app --reload` binds the IPv4 loopback, so
+`curl http://localhost:8000/stats` and `curl http://127.0.0.1:8000/stats` can
+reach two different servers, with different results. Run only one backend on
+port 8000:
+
+```bash
+# container only
+docker compose stop backend && docker compose up -d backend
+
+# or host uvicorn only
+pkill -f "uvicorn main:app"
+```
+
+When uvicorn runs on the host it reads `biolens-backend/.env` and rewrites
+`host.docker.internal` to `127.0.0.1` automatically, because that Docker alias
+does not resolve on macOS.
+
 ### "port 3000 already in use"
 
 Find the process using the port:
@@ -281,6 +300,57 @@ Then inspect the backend logs:
 ```bash
 docker logs biolens-backend --tail 100
 ```
+
+### "The database `biolens` is currently unavailable"
+
+`Neo.TransientError.General.DatabaseUnavailable` means Bolt and authentication
+succeeded: the Neo4j server is reachable, but the requested database is not
+serving requests. The database is stopped, still starting, or recovering.
+
+Neo4j starts `system` and `neo4j` before user databases. If `biolens` cannot
+start, the DBMS still reports RUNNING and the backend still connects, so only
+graph queries fail while `/` and `/docs` keep returning 200. The database log
+records the reason, for example:
+
+```text
+[biolens/4b341359] Exception occurred while starting the database.
+Caused by: org.neo4j.io.locker.FileLockException: Lock file has been locked by
+another process: .../data/databases/biolens/database_lock
+```
+
+Check the real status through the API and, if needed, directly through Bolt:
+
+```bash
+curl -s http://localhost:8000/health | python3 -m json.tool
+```
+
+```bash
+docker exec -i biolens-backend python - <<'PY'
+import os
+from neo4j import GraphDatabase
+
+driver = GraphDatabase.driver(
+    os.environ["NEO4J_URI"],
+    auth=(os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"]),
+)
+with driver.session(database="system") as session:
+    print(
+        session.run(
+            "SHOW DATABASES YIELD name, currentStatus RETURN name, currentStatus"
+        ).data()
+    )
+driver.close()
+PY
+```
+
+If `biolens` reports `offline`, stop and start the DBMS in Neo4j Desktop and
+wait for the database to reach `online`. Restarting the DBMS releases the stale
+lock; do not delete `data/databases/biolens` to clear a lock, because that
+removes the graph.
+
+`/health` returns 200 when the configured database answers a query and 503 with
+`database_status` plus the driver error when it does not. The backend stays
+running in that state deliberately so the outage is reported instead of hidden.
 
 ### "container restarting"
 

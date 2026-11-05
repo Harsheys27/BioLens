@@ -1,32 +1,357 @@
-from fastapi import FastAPI, HTTPException
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from neo4j import GraphDatabase
+from neo4j.exceptions import (
+    AuthError,
+    ClientError,
+    DatabaseUnavailable,
+    GqlError,
+    Neo4jError,
+    ServiceUnavailable,
+)
 from typing import Optional, List, Dict, Any
+import logging
 import math
 import json
 import httpx
 import re
 import asyncio
-from datetime import datetime
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 import os
 
-app = FastAPI(title="BioLens Biomedical Intelligence API", version="2.0.0")
+# ============================================================
+# Configuration
+# ============================================================
+# The .env file lives next to this module. Loading it explicitly makes the
+# backend behave identically when run inside Docker (Compose injects the same
+# keys through env_file) and when run directly on the macOS host with uvicorn.
+load_dotenv_path = Path(__file__).with_name(".env")
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
+    load_dotenv = None
+
+if load_dotenv is not None and load_dotenv_path.exists():
+    load_dotenv(load_dotenv_path)
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("biolens.api")
+
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "biolens")
+
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+]
+
+RUNNING_IN_CONTAINER = Path("/.dockerenv").exists()
+
+
+def _resolve_neo4j_uri(raw_uri: str) -> str:
+    """Return a URI that is reachable from the current runtime.
+
+    ``host.docker.internal`` is a Docker Desktop alias that only resolves from
+    inside a container. Running uvicorn directly on macOS must use loopback,
+    otherwise the driver fails at DNS resolution time.
+    """
+    if not RUNNING_IN_CONTAINER and "host.docker.internal" in raw_uri:
+        resolved = raw_uri.replace("host.docker.internal", "127.0.0.1")
+        logger.info(
+            "Running outside Docker: rewriting NEO4J_URI %s -> %s", raw_uri, resolved
+        )
+        return resolved
+    return raw_uri
+
+
+NEO4J_URI = _resolve_neo4j_uri(
+    os.getenv("NEO4J_URI", "bolt://host.docker.internal:7687")
+)
+
+if not NEO4J_PASSWORD:
+    raise RuntimeError(
+        "NEO4J_PASSWORD is not set. Add it to biolens-backend/.env (see "
+        ".env.example) or to the container environment. The API refuses to "
+        "start without Neo4j credentials instead of failing every request later."
+    )
+
+# The driver itself only opens sockets lazily, so creating it does not prove
+# that Neo4j is reachable. Readiness is verified in the lifespan probe below.
+driver = GraphDatabase.driver(
+    NEO4J_URI,
+    auth=(NEO4J_USER, NEO4J_PASSWORD),
+    max_connection_pool_size=int(os.getenv("NEO4J_MAX_POOL_SIZE", "50")),
+    connection_acquisition_timeout=float(
+        os.getenv("NEO4J_CONNECTION_ACQUISITION_TIMEOUT", "30")
+    ),
+    connection_timeout=float(os.getenv("NEO4J_CONNECTION_TIMEOUT", "5")),
+    max_connection_lifetime=float(os.getenv("NEO4J_MAX_CONNECTION_LIFETIME", "3600")),
+)
+
+TRANSIENT_NEO4J_ERRORS = (ServiceUnavailable, DatabaseUnavailable)
+# Server errors (Neo4jError) and client/driver errors such as
+# ServiceUnavailable both derive from GqlError. Catching only Neo4jError would
+# let a connection failure escape as an unhandled 500.
+NEO4J_ERRORS = (GqlError,)
+
+
+def graph_session(**kwargs):
+    """Open a session against the configured BioLens database.
+
+    Using one helper keeps the database name environment-driven instead of
+    hardcoding ``biolens`` at every call site.
+    """
+    return driver.session(database=NEO4J_DATABASE, **kwargs)
+
+
+def run_query(
+    query: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    *,
+    retries: int = 2,
+):
+    """Run Cypher with bounded retries for transient Neo4j outages.
+
+    Neo4j returns ``DatabaseUnavailable`` while a database is starting, being
+    restored, or recovering. Retrying briefly turns those windows into a short
+    delay instead of a hard 500 for the caller.
+    """
+    last_error: Optional[GqlError] = None
+    for attempt in range(1, retries + 2):
+        try:
+            with graph_session() as session:
+                return session.run(query, parameters or {}).data()
+        except TRANSIENT_NEO4J_ERRORS as exc:
+            last_error = exc
+            logger.warning(
+                "Neo4j transient failure for database '%s' (attempt %s/%s): %s",
+                NEO4J_DATABASE,
+                attempt,
+                retries + 1,
+                type(exc).__name__,
+            )
+            if attempt <= retries:
+                time.sleep(1.0)
+    if last_error is None:  # pragma: no cover - defensive
+        raise ServiceUnavailable("Neo4j query failed without a recorded error")
+    raise last_error
+
+
+NEO4J_PROBE_TIMEOUT = float(os.getenv("NEO4J_PROBE_TIMEOUT", "8"))
+
+# The Neo4j driver retries service-unavailable errors internally for tens of
+# seconds, which would otherwise stall application startup and /health when the
+# DBMS is down. Probes therefore run on a worker thread with a hard deadline.
+_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="neo4j-probe")
+
+
+def _probe_neo4j_blocking() -> Dict[str, Any]:
+    """Perform the real connectivity + database availability check."""
+    started = time.perf_counter()
+    probe: Dict[str, Any] = {
+        "uri": NEO4J_URI,
+        "database": NEO4J_DATABASE,
+        "connected": False,
+        "database_available": False,
+        "database_status": "unknown",
+        "server": None,
+        "latency_ms": None,
+        "error": None,
+    }
+
+    try:
+        driver.verify_connectivity()
+        probe["connected"] = True
+        probe["server"] = driver.get_server_info().agent
+    except NEO4J_ERRORS as exc:
+        probe["error"] = f"{type(exc).__name__}: {exc}"
+        probe["healthy"] = False
+        probe["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        return probe
+
+    try:
+        with driver.session(database="system") as session:
+            rows = session.run(
+                "SHOW DATABASES YIELD name, currentStatus RETURN name, currentStatus"
+            ).data()
+        statuses = {row["name"]: row["currentStatus"] for row in rows}
+        probe["databases"] = statuses
+        probe["database_status"] = statuses.get(NEO4J_DATABASE, "not_found")
+    except NEO4J_ERRORS as exc:
+        probe["error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        with graph_session() as session:
+            session.run("RETURN 1 AS ok").consume()
+        probe["database_available"] = True
+    except NEO4J_ERRORS as exc:
+        probe["database_available"] = False
+        probe["error"] = f"{type(exc).__name__}: {exc}"
+
+    probe["healthy"] = probe["connected"] and probe["database_available"]
+    probe["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    return probe
+
+
+def probe_neo4j(timeout: Optional[float] = None) -> Dict[str, Any]:
+    """Run :func:`_probe_neo4j_blocking` with a hard time limit.
+
+    A driver that cannot reach the server takes a long time to give up. The
+    deadline keeps startup and ``GET /health`` responsive and reports the
+    timeout instead of pretending Neo4j is healthy.
+    """
+    limit = NEO4J_PROBE_TIMEOUT if timeout is None else timeout
+    future = _PROBE_EXECUTOR.submit(_probe_neo4j_blocking)
+    try:
+        return future.result(timeout=limit)
+    except FuturesTimeoutError:
+        logger.error(
+            "Neo4j probe exceeded %ss (uri=%s database=%s). Reporting not ready.",
+            limit,
+            NEO4J_URI,
+            NEO4J_DATABASE,
+        )
+        return {
+            "uri": NEO4J_URI,
+            "database": NEO4J_DATABASE,
+            "connected": False,
+            "database_available": False,
+            "database_status": "unknown",
+            "server": None,
+            "latency_ms": round(limit * 1000, 1),
+            "error": f"Connectivity check timed out after {limit:.0f}s. Neo4j may be unreachable at {NEO4J_URI}.",
+            "healthy": False,
+        }
+    except NEO4J_ERRORS as exc:
+        logger.error("Neo4j probe failed: %s: %s", type(exc).__name__, exc)
+        return {
+            "uri": NEO4J_URI,
+            "database": NEO4J_DATABASE,
+            "connected": False,
+            "database_available": False,
+            "database_status": "unknown",
+            "server": None,
+            "latency_ms": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "healthy": False,
+        }
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(
+        "BioLens API starting | uri=%s database=%s user=%s container=%s",
+        NEO4J_URI,
+        NEO4J_DATABASE,
+        NEO4J_USER,
+        RUNNING_IN_CONTAINER,
+    )
+    probe = probe_neo4j()
+    if probe["healthy"]:
+        logger.info(
+            "Neo4j ready | server=%s database=%s status=%s latency_ms=%s",
+            probe["server"],
+            NEO4J_DATABASE,
+            probe["database_status"],
+            probe["latency_ms"],
+        )
+    else:
+        logger.error(
+            "Neo4j NOT ready at startup | uri=%s database=%s status=%s error=%s. "
+            "Endpoints that touch the graph will return 503 until it recovers; "
+            "see GET /health.",
+            NEO4J_URI,
+            NEO4J_DATABASE,
+            probe["database_status"],
+            probe["error"],
+        )
+    try:
+        yield
+    finally:
+        _PROBE_EXECUTOR.shutdown(wait=False)
+        driver.close()
+        logger.info("Neo4j driver closed")
+
+
+app = FastAPI(
+    title="BioLens Biomedical Intelligence API",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://host.docker.internal:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
-driver = GraphDatabase.driver(
-    NEO4J_URI,
-    auth=(NEO4J_USER, NEO4J_PASSWORD)
-)
+
+@app.exception_handler(GqlError)
+def neo4j_exception_handler(request: Request, exc: GqlError):
+    """Translate Neo4j failures into honest HTTP responses.
+
+    A database outage is a 503, not a generic 500 with a stack trace, and the
+    response never includes credentials or the connection password.
+    """
+    if isinstance(exc, AuthError):
+        status_code, error_code = 503, "neo4j_authentication_failed"
+        detail = "Neo4j rejected the configured credentials. Check NEO4J_USER and NEO4J_PASSWORD."
+    elif isinstance(exc, ServiceUnavailable):
+        status_code, error_code = 503, "neo4j_unreachable"
+        detail = f"Neo4j is not reachable at {NEO4J_URI}. Verify the DBMS is running and Bolt is listening."
+    elif isinstance(exc, DatabaseUnavailable):
+        status_code, error_code = 503, "database_unavailable"
+        detail = (
+            f"The database '{NEO4J_DATABASE}' is not currently available to serve requests. "
+            "It may be starting, stopped, or recovering. Check its status in Neo4j Desktop."
+        )
+    elif isinstance(exc, ClientError) and str(
+        getattr(exc, "neo4j_code", "") or getattr(exc, "code", "")
+    ).startswith("Neo.ClientError.Database"):
+        error_code = "database_unavailable"
+        status_code = 503
+        detail = (
+            f"Neo4j has no usable database named '{NEO4J_DATABASE}'. "
+            "Check the NEO4J_DATABASE setting against the databases registered on the DBMS."
+        )
+    else:
+
+        status_code, error_code = 500, "neo4j_query_error"
+        detail = "Neo4j rejected the query. Inspect the backend logs for details."
+
+    logger.error(
+        "Neo4j %s on %s %s | uri=%s database=%s | %s",
+        error_code,
+        request.method,
+        request.url.path,
+        NEO4J_URI,
+        NEO4J_DATABASE,
+        exc,
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "detail": detail,
+            "error": error_code,
+            "database": NEO4J_DATABASE,
+            "path": request.url.path,
+        },
+    )
 
 # ============================================================
 # Pydantic models
@@ -72,18 +397,73 @@ class LinkPredictionRequest(BaseModel):
 def root():
     return {"message": "BioLens Backend Running", "version": "2.0.0", "features": 12}
 
+@app.get("/health")
+def health():
+    """Liveness + readiness for the backend and the Neo4j database.
+
+    Returns 200 only when Neo4j accepts a query against the configured
+    database. A reachable Bolt endpoint with an offline database is reported as
+    503 so orchestrators and the frontend do not mistake a broken graph for a
+    healthy service.
+    """
+    probe = probe_neo4j()
+    healthy = bool(probe.get("healthy"))
+    body = {
+        "status": "ok" if healthy else "degraded",
+        "service": "biolens-backend",
+        "backend": "running",
+        "neo4j": {
+            "uri": probe["uri"],
+            "connected": probe["connected"],
+            "database": probe["database"],
+            "database_status": probe["database_status"],
+            "database_available": probe["database_available"],
+            "server": probe["server"],
+            "latency_ms": probe["latency_ms"],
+            "error": probe["error"],
+        },
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return JSONResponse(status_code=200 if healthy else 503, content=body)
+
+@app.get("/stats")
+def get_stats():
+    diseases = run_query("MATCH (n:Disease) RETURN count(n) AS c")[0]["c"]
+    genes = run_query("MATCH (g:Gene) RETURN count(g) AS c")[0]["c"]
+    drugs = run_query("MATCH (dr:Drug) RETURN count(dr) AS c")[0]["c"]
+    relationships = run_query("MATCH ()-[r]->() RETURN count(r) AS c")[0]["c"]
+
+    return {
+        "diseases": diseases,
+        "genes": genes,
+        "drugs": drugs,
+        "relationships": relationships
+    }
+
 @app.get("/test")
 def test_neo4j():
-    query = """
-    MATCH (n)
-    RETURN count(n) as total
-    """
-    with driver.session(database="biolens") as session:
-        result = session.run(query)
-        count = result.single()["total"]
+    probe = probe_neo4j()
+    if not probe["healthy"]:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "database": NEO4J_DATABASE,
+                "database_status": probe["database_status"],
+                "error": "database_unavailable"
+                if probe["connected"]
+                else "neo4j_unreachable",
+                "detail": probe["error"],
+            },
+        )
+    rows = run_query("MATCH (n) RETURN count(n) AS total")
     return {
         "status": "connected",
-        "nodes": count
+        "database": NEO4J_DATABASE,
+        "database_status": probe["database_status"],
+        "nodes": rows[0]["total"] if rows else 0,
+        "server": probe["server"],
+        "latency_ms": probe["latency_ms"],
     }
 
 @app.get("/disease/{name}")
@@ -100,7 +480,7 @@ def get_disease(name: str):
     edges = []
     node_ids = set()
 
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, name=name)
         for record in result:
             disease_node = record["d"]
@@ -137,21 +517,6 @@ def get_disease(name: str):
         "edges": edges
     }
 
-@app.get("/stats")
-def get_stats():
-    with driver.session(database="biolens") as session:
-        diseases = session.run("MATCH (n:Disease) RETURN count(n) as c").single()["c"]
-        genes = session.run("MATCH (n:Gene) RETURN count(n) as c").single()["c"]
-        drugs = session.run("MATCH (n:Drug) RETURN count(n) as c").single()["c"]
-        relationships = session.run("MATCH ()-[r]->() RETURN count(r) as c").single()["c"]
-
-    return {
-        "diseases": diseases,
-        "genes": genes,
-        "drugs": drugs,
-        "relationships": relationships
-    }
-
 @app.get("/drug/{drug_name}")
 def get_drug(drug_name: str):
     query = """
@@ -169,7 +534,7 @@ def get_drug(drug_name: str):
     count(DISTINCT g) as gene_count,
     count(DISTINCT d) as disease_count
     """
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, drug_name=drug_name)
         record = result.single()
         if record is None:
@@ -198,7 +563,7 @@ def get_alphafold(gene_name: str):
            g.uniprot_id AS uniprot_id,
            g.sequence AS sequence
     """
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, gene_name=gene_name)
         record = result.single()
 
@@ -258,7 +623,7 @@ def sequence_search(q: str = ""):
 
     query_str = q.strip().upper()
 
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         genes_result = session.run("MATCH (g:Gene) RETURN g.name AS name")
         gene_names = [record["name"] for record in genes_result]
 
@@ -306,7 +671,7 @@ def sequence_search(q: str = ""):
     top_matches = scored[:5]
 
     results = []
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         for gene_name, sim_score in top_matches:
             gene_query = """
             MATCH (g:Gene {name:$gene_name})
@@ -343,7 +708,7 @@ def sequence_search(q: str = ""):
 
 @app.get("/debug")
 def debug():
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         d = session.run("MATCH (d:Disease) RETURN count(d) as c").single()["c"]
         g = session.run("MATCH (g:Gene) RETURN count(g) as c").single()["c"]
         dr = session.run("MATCH (dr:Drug) RETURN count(dr) as c").single()["c"]
@@ -363,7 +728,7 @@ def repurpose_drug(disease_name: str):
     ORDER BY score DESC
     LIMIT 10
     """
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, disease_name=disease_name)
         candidates = []
         for record in result:
@@ -490,7 +855,7 @@ def _check_neo4j_drug_pair(d1: str, d2: str):
     RETURN collect(DISTINCT g.name) as shared_genes, collect(DISTINCT dis.name) as shared_diseases
     """
     try:
-        with driver.session(database="biolens") as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
             result = session.run(query, d1=d1, d2=d2)
             record = result.single()
             if record:
@@ -498,8 +863,8 @@ def _check_neo4j_drug_pair(d1: str, d2: str):
                     "shared_genes": record.get("shared_genes", []) or [],
                     "shared_diseases": record.get("shared_diseases", []) or [],
                 }
-    except Exception:
-        pass
+    except NEO4J_ERRORS as exc:
+        logger.warning("Neo4j lookup failed: %s: %s", type(exc).__name__, exc)
     return {"shared_genes": [], "shared_diseases": []}
 
 def _infer_mechanism_from_graph(d1: str, d2: str):
@@ -509,13 +874,13 @@ def _infer_mechanism_from_graph(d1: str, d2: str):
     RETURN g.name as gene LIMIT 3
     """
     try:
-        with driver.session(database="biolens") as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
             result = session.run(query, d1=d1, d2=d2)
             genes = [record["gene"] for record in result]
             if genes:
                 return f"Both drugs target shared gene(s): {', '.join(genes)}. Potential pharmacodynamic interaction possible."
-    except Exception:
-        pass
+    except NEO4J_ERRORS as exc:
+        logger.warning("Neo4j lookup failed: %s: %s", type(exc).__name__, exc)
     return "No shared targets found in knowledge graph. Pharmacokinetic interaction cannot be ruled out."
 
 # ============================================================
@@ -604,7 +969,7 @@ def _lookup_gene_risk(gene: str):
     RETURN g.name as gene, collect(DISTINCT d.name) as diseases, collect(DISTINCT m.name) as mutations
     """
     try:
-        with driver.session(database="biolens") as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
             result = session.run(query, gene=gene)
             record = result.single()
             if record and (record.get("diseases") or record.get("mutations")):
@@ -615,8 +980,8 @@ def _lookup_gene_risk(gene: str):
                     "detail": f"Associated with: {', '.join(diseases[:3])}" + (f". Known mutations: {', '.join(mutations[:2])}" if mutations else ""),
                     "score": min(0.3, len(diseases) * 0.08 + len(mutations) * 0.1)
                 }
-    except Exception:
-        pass
+    except NEO4J_ERRORS as exc:
+        logger.warning("Neo4j lookup failed: %s: %s", type(exc).__name__, exc)
 
     # Hardcoded fallbacks for known high-risk genes
     KNOWN_RISKS = {
@@ -645,7 +1010,7 @@ def _compute_disease_probabilities(conditions: List[str], family: List[str], gen
         LIMIT 10
         """
         try:
-            with driver.session(database="biolens") as session:
+            with driver.session(database=NEO4J_DATABASE) as session:
                 result = session.run(query, genes=genes)
                 for record in result:
                     gene_count = record["gene_hits"]
@@ -656,8 +1021,12 @@ def _compute_disease_probabilities(conditions: List[str], family: List[str], gen
                         "evidence": f"Linked via {gene_count} shared gene(s)",
                         "confidence": "high" if gene_count >= 2 else "moderate",
                     })
-        except Exception:
-            pass
+        except NEO4J_ERRORS as exc:
+            logger.warning(
+                "Neo4j lookup failed, returning degraded data: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     # Add condition-progression risks
     for cond in conditions:
@@ -670,7 +1039,7 @@ def _compute_disease_probabilities(conditions: List[str], family: List[str], gen
         LIMIT 5
         """
         try:
-            with driver.session(database="biolens") as session:
+            with driver.session(database=NEO4J_DATABASE) as session:
                 result = session.run(query, cond=cond)
                 for record in result:
                     prob = min(0.85, 0.15 + record["shared"] * 0.1)
@@ -684,8 +1053,12 @@ def _compute_disease_probabilities(conditions: List[str], family: List[str], gen
                             "evidence": f"Shares {record['shared']} gene(s) with existing condition: {cond}",
                             "confidence": "moderate",
                         })
-        except Exception:
-            pass
+        except NEO4J_ERRORS as exc:
+            logger.warning(
+                "Neo4j lookup failed, returning degraded data: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     if not probabilities:
         probabilities.append({
@@ -741,7 +1114,7 @@ def _find_repurposing_for_patient(conditions: List[str], genes: List[str]):
         LIMIT 5
         """
         try:
-            with driver.session(database="biolens") as session:
+            with driver.session(database=NEO4J_DATABASE) as session:
                 result = session.run(query, cond=cond)
                 for record in result:
                     if record["drug"] not in seen_drugs:
@@ -753,8 +1126,12 @@ def _find_repurposing_for_patient(conditions: List[str], genes: List[str]):
                             "pathway_score": record["score"],
                             "recommendation": "Investigate for repurposing potential"
                         })
-        except Exception:
-            pass
+        except NEO4J_ERRORS as exc:
+            logger.warning(
+                "Neo4j lookup failed, returning degraded data: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     return candidates[:10]
 
@@ -774,7 +1151,7 @@ def _build_biological_explanation(conditions: List[str], genes: List[str]):
         LIMIT 5
         """
         try:
-            with driver.session(database="biolens") as session:
+            with driver.session(database=NEO4J_DATABASE) as session:
                 result = session.run(query, cond=cond)
                 for record in result:
                     step = {
@@ -785,8 +1162,12 @@ def _build_biological_explanation(conditions: List[str], genes: List[str]):
                         "drugs": record["drugs"] or [],
                     }
                     chain.append(step)
-        except Exception:
-            pass
+        except NEO4J_ERRORS as exc:
+            logger.warning(
+                "Neo4j lookup failed, returning degraded data: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     return chain
 
@@ -896,7 +1277,7 @@ def _step1_extract_entities(question: str) -> Dict[str, Any]:
 
     # Neo4j lookups for additional matches
     try:
-        with driver.session(database="biolens") as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
             words = q.replace(",", " ").replace("?", " ").replace(".", " ").split()
             for word in words:
                 if len(word) >= 3:
@@ -916,8 +1297,8 @@ def _step1_extract_entities(question: str) -> Dict[str, Any]:
                         name = record["name"]
                         if name not in extracted["diseases"]:
                             extracted["diseases"].append(name)
-    except Exception:
-        pass
+    except NEO4J_ERRORS as exc:
+        logger.warning("Neo4j lookup failed: %s: %s", type(exc).__name__, exc)
 
     return extracted
 
@@ -931,7 +1312,7 @@ def _step2_search_neo4j(entities: Dict[str, Any]) -> Dict[str, Any]:
     all_pathways = set()
 
     try:
-        with driver.session(database="biolens") as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
             # For each disease, find associated genes and drugs
             for disease in entities.get("diseases", [])[:3]:
                 result = session.run("""
@@ -1001,8 +1382,19 @@ def _step2_search_neo4j(entities: Dict[str, Any]) -> Dict[str, Any]:
                     }
                     if not existing:
                         graph_paths.append({"drug_detail": drug_detail})
-    except Exception as e:
-        graph_paths.append({"error": f"Neo4j traversal error: {str(e)}"})
+    except NEO4J_ERRORS as exc:
+        logger.error(
+            "Neo4j graph traversal failed for database '%s': %s: %s",
+            NEO4J_DATABASE,
+            type(exc).__name__,
+            exc,
+        )
+        graph_paths.append(
+            {
+                "error": f"Neo4j traversal unavailable for database '{NEO4J_DATABASE}'",
+                "error_type": type(exc).__name__,
+            }
+        )
 
     return {
         "graph_paths": graph_paths,
@@ -1115,7 +1507,7 @@ def _step4_graph_intelligence(neo4j_data: Dict[str, Any], entities: Dict[str, An
     if not drug_scores:
         for disease in entities.get("diseases", [])[:2]:
             try:
-                with driver.session(database="biolens") as session:
+                with driver.session(database=NEO4J_DATABASE) as session:
                     result = session.run("""
                         MATCH (d:Disease {name: $disease})-[:ASSOCIATED_WITH]->(g:Gene)
                         MATCH (g)-[:TARGETED_BY]->(dr:Drug)
@@ -1136,8 +1528,12 @@ def _step4_graph_intelligence(neo4j_data: Dict[str, Any], entities: Dict[str, An
                                 "evidence_level": "Computational",
                                 "confidence": 0.5,
                             }
-            except Exception:
-                pass
+            except NEO4J_ERRORS as exc:
+                logger.warning(
+                    "Neo4j fallback ranking failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
 
     candidate_drugs = sorted(drug_scores.values(), key=lambda x: x["score"], reverse=True)[:10]
 
@@ -1372,7 +1768,7 @@ def drug_similarity(drug_name: str, limit: int = 10):
     RETURN dr.name as drug, collect(DISTINCT g.name) as genes, collect(DISTINCT d.name) as diseases
     """
     try:
-        with driver.session(database="biolens") as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
             result = session.run(query, drug_name=drug_name)
             record = result.single()
             if not record:
@@ -1380,8 +1776,11 @@ def drug_similarity(drug_name: str, limit: int = 10):
 
             query_genes = set(record.get("genes", []) or [])
             query_diseases = set(record.get("diseases", []) or [])
-    except Exception as e:
-        return {"error": str(e)}
+    except NEO4J_ERRORS as exc:
+        logger.error(
+            "Neo4j error while resolving drug %s: %s: %s", drug_name, type(exc).__name__, exc
+        )
+        raise
 
     if not query_genes:
         return {"drug": drug_name, "similar_drugs": [], "message": "No gene associations found for this drug."}
@@ -1395,7 +1794,7 @@ def drug_similarity(drug_name: str, limit: int = 10):
     RETURN dr2.name as drug, collect(DISTINCT g2.name) as genes, collect(DISTINCT d2.name) as diseases
     """
     similar = []
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(all_drugs_query, drug_name=drug_name)
         for record in result:
             other_genes = set(record.get("genes", []) or [])
@@ -1449,12 +1848,14 @@ def get_transcriptomics(gene_name: str):
            collect(DISTINCT t.expression_level) as expression_levels,
            collect(DISTINCT em.name) as epigenetic_markers
     """
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, gene_name=gene_name)
         record = result.single()
 
     if not record:
-        # Return synthetic data for demo
+        # No gene node in the graph: label the payload so callers can tell it
+        # apart from real Neo4j data instead of treating synthetic values as
+        # knowledge-graph evidence.
         return {
             "gene": gene_name,
             "transcripts": [f"{gene_name}-201", f"{gene_name}-202"],
@@ -1464,6 +1865,9 @@ def get_transcriptomics(gene_name: str):
             "expression_score": 0.78,
             "epigenetic_markers": [],
             "source": "BioLens Multiomics Engine",
+            "degraded": True,
+            "data_origin": "synthetic_demo",
+            "warning": f"Gene '{gene_name}' was not found in Neo4j database '{NEO4J_DATABASE}'. The values above are synthetic demo fallbacks, not graph data.",
         }
 
     return {
@@ -1489,7 +1893,7 @@ def get_proteomics(gene_name: str):
            collect(DISTINCT p.abundance) as abundances,
            collect(DISTINCT dr.name) as targeted_by
     """
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, gene_name=gene_name)
         record = result.single()
 
@@ -1501,6 +1905,9 @@ def get_proteomics(gene_name: str):
             "protein_level": 0.72,
             "interactions": [],
             "targeted_by": [],
+            "degraded": True,
+            "data_origin": "synthetic_demo",
+            "warning": f"Gene '{gene_name}' was not found in Neo4j database '{NEO4J_DATABASE}'. The values above are synthetic demo fallbacks, not graph data.",
             "source": "BioLens Multiomics Engine",
         }
 
@@ -1525,7 +1932,7 @@ def get_metabolomics(disease_name: str):
     RETURN collect(DISTINCT met.name) as metabolites,
            collect(DISTINCT pw.name) as pathways
     """
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, disease_name=disease_name)
         record = result.single()
 
@@ -1570,7 +1977,7 @@ def get_mutations(gene_name: str):
            collect(DISTINCT d.name) as diseases,
            collect(DISTINCT dr.name) as drugs
     """
-    with driver.session(database="biolens") as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, gene_name=gene_name)
         record = result.single()
 

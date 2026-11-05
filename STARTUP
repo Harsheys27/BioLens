@@ -1,3 +1,6 @@
-RUN cd ~/Desktop/BIOLens/biolens-backend 
-THEN python3 -m uvicorn main:app --reload
-THEN npm run dev
+Open Docker on your laptop  then Vs Code
+Open terminal and put:-
+docker compose up -d
+
+then open site :-
+ <http://localhost:3000>

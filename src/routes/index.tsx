@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ProteinViewer from "@/components/ProteinViewer";
-import { apiUrl } from "@/lib/api/client";
+import { apiFetch, apiUrl } from "@/lib/api/client";
 import DNASearchPanel from "@/components/DNASearchPanel";
 import PatientTwinPanel from "@/components/PatientTwinPanel";
 import DrugInteractionPanel from "@/components/DrugInteractionPanel";
@@ -986,38 +986,22 @@ function MolecularSpinner() {
 const DISEASES = ["Alzheimer disease", "Parkinson disease", "COVID-19", "Breast Cancer", "inflammatory bowel disease"];
 
 async function fetchDiseaseData(disease: string) {
-  const response = await fetch(
-    apiUrl(`disease/${encodeURIComponent(disease)}`)
-  );
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch disease data");
-  }
-
-  return response.json();
+  return apiFetch<{ disease: string }>(`disease/${encodeURIComponent(disease)}`);
 }
 
 async function fetchRepurposeData(disease: string) {
-
-  const res = await fetch(
-    apiUrl(`repurpose/${encodeURIComponent(disease)}`)
+  return apiFetch<{ candidates?: unknown[] }>(
+    `repurpose/${encodeURIComponent(disease)}`
   );
-
-  if (!res.ok) {
-    throw new Error("Failed to fetch repurpose data");
-  }
-
-  return await res.json();
 }
 
 async function fetchStats() {
-  const response = await fetch(apiUrl("stats"));
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch stats");
-  }
-
-  return response.json();
+  return apiFetch<{
+    diseases: number;
+    genes: number;
+    drugs: number;
+    relationships: number;
+  }>("stats");
 }
 
 function FeatureBtn({ label, title, onClick, color }: { label: string; title: string; onClick: () => void; color: string }) {
@@ -1105,7 +1089,11 @@ function BioLensPage() {
   
     } catch (err) {
       console.error(err);
-      alert("Failed to fetch disease data");
+      // Surface the backend explanation (for example "database unavailable")
+      // instead of a generic failure so graph outages are diagnosable.
+      alert(
+        err instanceof Error ? err.message : "Failed to fetch disease data"
+      );
     }
   };
 

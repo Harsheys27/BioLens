@@ -18,3 +18,8 @@ dist
 
 # The frontend image does not need the backend build context
 biolens-backend
+
+# Local database dumps and compose files are not part of the frontend image
+neo4j/backups
+*.dump
+docker-compose*.yml
