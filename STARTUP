@@ -4,3 +4,60 @@ docker compose up -d
 
 then open site :-
  <http://localhost:3000>
+
+
+ # BIOLENS – STARTUP GUIDE
+
+### 1. Start Podman
+Open Podman on your laptop.
+Run:
+
+```bash
+podman machine start
+```
+
+Make sure the Podman machine is running.
+
+### 2. Open VS Code
+Open the BioLens project folder in VS Code.
+
+### 3. Open Terminal
+Open the integrated terminal in VS Code.
+
+### 4. Start BioLens
+Run:
+
+```bash
+podman-compose -f podman-compose.yml up -d
+```
+
+This starts:
+- Neo4j Database
+- FastAPI Backend
+- React Frontend
+
+### 5. Check Containers
+
+```bash
+podman-compose -f podman-compose.yml ps
+```
+
+Make sure all three containers are healthy.
+
+### 6. Open BioLens
+
+Frontend:
+http://localhost:3000
+
+Backend API:
+http://localhost:8000/docs
+
+---
+
+### TO STOP BIOLENS
+
+```bash
+podman-compose -f podman-compose.yml stop
+```
+
+**Note:** No need to rebuild images or restore the database during normal startup.
